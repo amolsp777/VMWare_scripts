@@ -1,0 +1,1012 @@
+﻿
+@"
+===============================================================================
+Title:         DataStore_Report.ps1
+Description:   Pull DataStore Information from mentioned vCenters. 
+Usage:         .\VC-AlarmCheck_Report.ps1
+Date:          09/09/2017
+Author:        Amol Patil
+Verion:        v1.0
+===============================================================================
+"@
+
+# Required VMware.PowerCli Module
+# Used PSWriteHTML  0.0.71
+# Used Dashimo 0.0.22
+rv * -ErrorAction SilentlyContinue -Force
+
+
+#region Simple Do-WriteHost Function
+# It will write notmal time based logs on the screen
+
+Function Do-WriteHost {
+    [CmdletBinding()] 
+    Param 
+    ( 
+        [Parameter(Mandatory=$true, 
+                   ValueFromPipelineByPropertyName=$true)] 
+        [ValidateNotNullOrEmpty()] 
+        [Alias("LogContent")] 
+        [string]$Message, 
+
+                [Parameter(Mandatory=$false)] 
+        [ValidateSet("Red","Yellow","Green")] 
+        [string]$Color="White",
+
+                [Parameter(Mandatory=$false)] 
+        [ValidateSet("Error","Warn","Info")] 
+        [string]$Level="Info"
+        )
+
+$FormattedDate = Get-Date -Format "[yyyy-MM-dd-HH:mm:ss]"
+switch ($Level) { 
+            'Error' {
+                $LevelText = 'ERROR:' 
+                Write-Host $FormattedDate $LevelText $Message -ForegroundColor Red
+                 } 
+            'Warn' { 
+                $LevelText = 'WARNING:'
+                Write-Host $FormattedDate $LevelText $Message -ForegroundColor Yellow
+                 } 
+            'Info' { 
+                #Write-Host $FormattedDate $Message 
+                #Write-Host $LevelText $FormattedDate $Message
+                $LevelText = 'INFO:'
+                Write-Host $FormattedDate $LevelText $Message -ForegroundColor $Color
+                } 
+            } 
+}
+#endregion
+
+
+# Get Start Time | to get the total elepsed time to complete this script.
+$startMain = (Get-Date) 
+
+#region VMWARE PLUGIN
+if(-not (Get-PSSnapin VMware.VimAutomation.Core -ErrorAction SilentlyContinue))
+{
+   Add-PSSnapin VMware.VimAutomation.Core  -ErrorAction SilentlyContinue
+}
+#endregion
+
+$vCs = "dcVC"
+
+
+$SCRIPT_PARENT   = Split-Path -Parent $MyInvocation.MyCommand.Definition 
+
+$Date = Get-Date -Format "dd-MM-yyyy"
+Remove-Item -Path ($SCRIPT_PARENT + "\VC_DataStores_Report(Complete)_$($date).csv") -ErrorAction SilentlyContinue
+Remove-Item -Path ($SCRIPT_PARENT + "\VM_Inventory_Report(Complete)_$($date).csv") -ErrorAction SilentlyContinue
+
+
+
+Function Get-@VMDataStores {
+
+$Result = @()
+
+$clusters = Get-Cluster #| select -First 1
+
+#foreach ($cluster in Get-Cluster | select -First 2){
+foreach ($cluster in $clusters ){
+          Get-VMHost -Location $cluster | Get-Datastore | %{
+        $info = "" | select VCName, DataStoreName, DataCenterName, ClusterName, CapacityGB, ProvisionedSpaceGB,UsedSpaceGB,FreeSpaceGB,FreeSpacePer,NumVM,OverProvisioned,'Shared Storage'
+        $info.VCName = ($_.ExtensionData.Client.ServiceUrl.Split('/')[2]).split('.')[0].toupper() 
+        $info.DataStoreName = $_.Name
+        $info.DataCenterName = $_.Datacenter
+        $info.ClusterName = $cluster.Name         
+        $info.CapacityGB = [math]::Round($_.capacityMB/1024,2) 
+        $info.ProvisionedSpaceGB = [math]::Round(($_.ExtensionData.Summary.Capacity - $_.ExtensionData.Summary.FreeSpace + $_.ExtensionData.Summary.Uncommitted)/1GB,2) 
+        $info.UsedSpaceGB = [Math]::Round(($_.ExtensionData.Summary.Capacity - $_.ExtensionData.Summary.FreeSpace)/1GB,2)
+        $info.FreeSpaceGB = [Math]::Round(($_.ExtensionData.Summary.FreeSpace)/1GB,2)
+        $info.FreeSpacePer = [int][math]::Round(((100* ($_.ExtensionData.Summary.FreeSpace/1GB))/ ($_.ExtensionData.Summary.Capacity/1GB)),0) 
+        $info.NumVM = @($_ | Get-VM | where {$_.PowerState -eq "PoweredOn"}).Count 
+        $info.OverProvisioned = IF(($info.ProvisionedSpaceGB) -gt ($info.CapacityGB) ) {"True"} else {"False"}
+        $info.'Shared Storage' = $_.ExtensionData.Summary.MultipleHostAccess
+        $report = $info 
+        $Result += $report 
+    }
+
+  }
+
+  $Resultout = $Result | sort -property FreeSpacePer
+   $Resultout
+
+
+ } # END Function Get-@VMDataStores
+
+#region GET-VMInventory Function
+Function Get-VMInventory {
+ 
+  #region Other needed Functions
+ function Get-RDMDisk {  
+   [CmdletBinding()]  
+   param (  
+     [Parameter(Mandatory=$True)]  
+     [string[]]$VMName  
+     )  
+         $RDMInfo = Get-VM -Name $VMName | Get-HardDisk -DiskType RawPhysical, RawVirtual  
+         $Result = foreach ($RDM in $RDMInfo) {  
+          "{0}/{1}/{2}/{3}"-f ($RDM.Name), ($RDM.DiskType),($RDM.Filename), ($RDM.ScsiCanonicalName)     
+         }  
+         $Result -join (", ")  
+ }  
+ function Get-vNicInfo {  
+   [CmdletBinding()]  
+   param (  
+     [Parameter(Mandatory=$True)]  
+     [string[]]$VMName  
+     )  
+         $vNicInfo = Get-VM -Name $VMName | Get-NetworkAdapter  
+         $Result = foreach ($vNic in $VnicInfo) {  
+           "{0}={1}"-f ($vnic.Name.split("")[2]), ($vNic.Type)  
+         }  
+         $Result -join (", ")  
+ }  
+ function Get-InternalHDD {  
+   [CmdletBinding()]  
+   param (  
+     [Parameter(Mandatory=$True)]  
+     [string[]]$VMName  
+     )  
+         $VMInfo = Get-VMGuest -VM $VMName  # (get-vm $VMName).extensiondata  
+         $InternalHDD = $VMInfo.ExtensionData.disk   
+         $result = foreach ($vdisk in $InternalHDD) {  
+           "{0}={1}GB/{2}GB"-f ($vdisk.DiskPath), ($vdisk.FreeSpace /1GB -as [int]),($vdisk.Capacity /1GB -as [int])  
+         }  
+         $result -join (", `n")  
+ } 
+  #endregion
+
+$props = @()
+
+# Below code can be use to get information based on selected condition. 
+  #$VMs = Get-VM | where {($_.Name -like "P-LS*") -or ($_.Name -like "P-OW*")}
+
+# Below code will check all the VMs.
+$VMs = Get-VM #| select -First 1
+
+#Write-Host "...Counting Total VMs." 
+ $i = 0
+ $E = 0
+ $count = $vms.Count
+ $E = $count
+ Write-Host ""
+ Write-Host "-----------------------------"
+ Write-Host "Total Count of VMs - $count"
+ Write-Host "-----------------------------"
+     
+foreach ($vm in $VMs) { 
+    
+# Get Start Time
+$startVMCheck = (Get-Date)
+
+$i++
+Write-Progress -activity “Checking for VM: ($i of $E) >> $VM" -perc (($i / $E)*100)
+
+     #region POWEROFF VM EVENT CHECK
+     Get-VIEvent -Entity $VM -MaxSamples ([int]::MaxValue) | where {$_ -is [VMware.Vim.VmPoweredOffEvent]} |
+     Group-Object -Property {$_.Vm.Name} | %{
+     $lastPO = $_.Group | Sort-Object -Property CreatedTime -Descending | Select -First 1 | Select -ExpandProperty CreatedTime
+     }
+      
+      $VMInfo = {} | Select PowerOFFDate
+       If ( $VM.powerstate -eq "poweredoff"){
+      $VMInfo.PowerOFFDate = $lastPO
+      }
+      Else {  $VMInfo.PowerOFFDate = "NA" }
+     #endregion
+
+   #region Defined Properties.
+
+
+   #-----------------------Cluster check 
+   If($vm.vmhost.ParentID -match 'Cluster*'){
+        $HostType = $vm.vmhost.Parent.Name
+         }
+
+        else { $HostType = "Standalone Host" }
+
+    #------------------------
+
+
+        $vm | Get-Datastore | %{
+        $info = "" | select DataStoreName, DataCenterName, ClusterName, CapacityGB, ProvisionedSpaceGB,UsedSpaceGB,FreeSpaceGB,FreeSpacePer,NumVM 
+        $info.DataStoreName = $_.Name
+        $info.DataCenterName = $_.Datacenter
+       # $info.ClusterName = $cluster.Name         
+        $info.CapacityGB = [math]::Round($_.capacityMB/1024,2) 
+        $info.ProvisionedSpaceGB = [math]::Round(($_.ExtensionData.Summary.Capacity - $_.ExtensionData.Summary.FreeSpace + $_.ExtensionData.Summary.Uncommitted)/1GB,2) 
+        $info.UsedSpaceGB = [Math]::Round(($_.ExtensionData.Summary.Capacity - $_.ExtensionData.Summary.FreeSpace)/1GB,2)
+        $info.FreeSpaceGB = [Math]::Round(($_.ExtensionData.Summary.FreeSpace)/1GB,2)
+        $info.FreeSpacePer = [math]::Round(((100* ($_.ExtensionData.Summary.FreeSpace/1GB))/ ($_.ExtensionData.Summary.Capacity/1GB)),0) 
+        #$info.NumVM = @($_ | Get-VM | where {$_.PowerState -eq "PoweredOn"}).Count 
+        $report = $info 
+        #$Result += $report 
+        }
+
+
+
+   #Associated Datastores  
+    #$datastoreinfo = $vm | Get-Datastore
+     $datastore = $($info.DataStoreName) -split ", " -join (",`n") #", " 
+     $DSCapacity = $($info.CapacityGB) -split ", " -join (",`n") #
+     $DSFreeSpace = $($info.FreeSpaceGB) -split ", " -join (",`n")
+     $DSProviSpace = $($info.ProvisionedSpaceGB) -split ", " -join (",`n")
+     
+     #Snapshot info  
+     $Snapshotinfo = $vm | Get-Snapshot 
+     $snapshot = $Snapshotinfo.count  
+     $snapshotCreated = ($Snapshotinfo.Created)  -join (",`n") #
+     $snapshotName = ($Snapshotinfo.Name)  -join (",`n") #
+     $snapshotSize = ($Snapshotinfo.SizeGB)  -join (",`n") #
+     $snapshotDesc = ($Snapshotinfo.Description)  -join (",`n") #
+
+           $Total_HDD= $vm.ProvisionedSpaceGB -as [int]  
+           $HDDs_GB = ($vm | get-harddisk | select-object -ExpandProperty CapacityGB) -join " + "            
+           $Partition = Get-InternalHDD -VMName $vm.Name
+
+           $ToolsStatus = ($VM | % { get-view $_.id }).Guest.ToolsStatus
+           $ToolVersion = ($VM | % { get-view $_.id }).Guest.ToolsVersion
+    # VM Uptime calculation
+     If ( $VM.powerstate -eq "poweredon"){
+      $Timespan = New-Timespan -Seconds (Get-Stat -Entity $VM.Name -Stat sys.uptime.latest -Realtime -MaxSamples 1).Value
+        $VMUptime = "" + $Timespan.Days + " Days" #+ $Timespan.Hours + " Hours, " +$Timespan.Minutes + " Minutes"
+      }
+      Else {  $VMUptime = " " }
+
+    $datacenterName = $vm | Get-Datacenter
+   $vCenterServer =  (($vm).ExtensionData.Client.ServiceUrl.Split('/')[2]).split('.')[0].toupper()  # OLD, was giving full name  # (($vm).ExtensionData.Client.ServiceUrl.Split('/')[2])#.trimend(":443") 
+   $PortGroup = ($vm | Get-NetworkAdapter).NetworkName -join ", `n"
+   $vNic = (Get-VNICinfo -VMName $vm.name) -join ", `n"
+   $MacAddress = ($vm | Get-NetworkAdapter).MacAddress -join ", `n"
+
+        $vmTotalDisk = [Int](Get-HardDisk -VM $vm.Name | select name).count 
+        $VMDiskGb = [Math]::Round((Get-HardDisk -VM $vm.Name | Measure-Object -Sum CapacityGB).Sum)
+        $VMDiskFree = [Math]::Round((($vm.Guest.Disks | Measure-Object -Property FreeSpace -Sum).Sum / 1GB),2)
+        $VMDiskUsed = $VMInfo.DiskGb - $VMInfo.DiskFree
+        $VMDK = ($vm | Get-HardDisk).filename -join ", `n"
+
+   #endregion
+
+   #region Property Result
+           $Results = New-Object Object
+           $Results | Add-Member -Type NoteProperty -Name 'VCName' -Value $vCenterServer 
+           $Results | Add-Member -Type NoteProperty -Name 'VMName' -Value $vm.Name  
+           $Results | Add-Member -Type NoteProperty -Name 'IP Address'-value $vm.Guest.IPAddress[0] #$VM.ExtensionData.Summary.Guest.IpAddress  
+           $Results | Add-Member -Type NoteProperty -Name 'MacAdress' -value $MacAddress
+           $Results | Add-Member -Type NoteProperty -Name 'PowerState' -value $vm.PowerState  
+           $Results | Add-Member -Type NoteProperty -Name "PowerOFFDate" -Value $VMInfo.PowerOFFDate
+           $Results | Add-Member -Type NoteProperty -Name "VM_OS" -Value $vm.Guest.OSFullName
+           $Results | Add-Member -Type NoteProperty -Name 'vCPU' -value $vm.NumCpu
+           $Results | Add-Member -Type NoteProperty -Name 'CoresPerSocket' -value $vm.CoresPerSocket  
+           $Results | Add-Member -Type NoteProperty -Name 'vRAM(GB)' -value $vm.MemoryGB
+           $Results | Add-Member -Type NoteProperty -Name 'VMVersion' -value $vm.Version
+           $Results | Add-Member -Type NoteProperty -Name 'ToolStatus' -value $ToolsStatus
+           $Results | Add-Member -Type NoteProperty -Name 'ToolVersion' -value $ToolVersion
+           $Results | Add-Member -Type NoteProperty -Name 'VM_Uptime' -value $VMUptime
+           
+           $Results | Add-Member -Type NoteProperty -Name 'vNIC' -value $vNic
+           $Results | Add-Member -Type NoteProperty -Name 'PortGroup' -value $PortGroup
+           
+           $Results | Add-Member -Type NoteProperty -Name 'TotalDisk' -value $vmTotalDisk
+           $Results | Add-Member -Type NoteProperty -Name 'TotalDiskGb' -value $VMDiskGb
+           $Results | Add-Member -Type NoteProperty -Name 'Provision_HDD(GB)' -value $Total_HDD
+           $Results | Add-Member -Type NoteProperty -Name 'DiskFree' -value $VMDiskFree
+           $Results | Add-Member -Type NoteProperty -Name 'HDDs(GB)' -value $HDDs_GB
+           $Results | Add-Member -Type NoteProperty -Name 'Partition' -value $Partition
+
+           $Results | Add-Member -Type NoteProperty -Name 'Host' -value $vm.vmhost.name
+           $Results | Add-Member -Type NoteProperty -Name 'HostState' -value $vm.VMHost.ConnectionState
+           $Results | Add-Member -Type NoteProperty -Name 'HostVersion' -value $vm.VMHost.Version
+           $Results | Add-Member -Type NoteProperty -Name 'HostBuild' -value $vm.VMHost.Build
+           
+           $Results | Add-Member -Type NoteProperty -Name 'DataCenter' -value $datacenterName
+           $Results | Add-Member -Type NoteProperty -Name 'ClusterType' -value $HostType
+           #$Results | Add-Member -Type NoteProperty -Name 'Cluster' -value $vm.vmhost.Parent.Name
+           #$Results | Add-Member -Type NoteProperty -Name 'Host' -value $vm.vmhost.name
+           $Results | Add-Member -Type NoteProperty -Name 'ResourcePool' -value $vm.ResourcePool
+           $Results | Add-Member -Type NoteProperty -Name 'VMFolder' -value $vm.folder
+
+           $Results | Add-Member -Type NoteProperty -Name 'Datastore_Name' -value $datastore
+           $Results | Add-Member -Type NoteProperty -Name 'Datastore_Capacity' -value $DSCapacity
+           $Results | Add-Member -Type NoteProperty -Name 'Datastore_FreeSpace' -value $DSFreeSpace
+           $Results | Add-Member -Type NoteProperty -Name 'Datastore_ProvisionSpace' -value $DSProviSpace
+
+           $Results | Add-Member -Type NoteProperty -Name 'SnapShot_Count' -value $snapshot
+           $Results | Add-Member -Type NoteProperty -Name 'SnapShot_Name' -value $snapshotName
+           $Results | Add-Member -Type NoteProperty -Name 'SnapShot_Created' -value $snapshotCreated
+           $Results | Add-Member -Type NoteProperty -Name 'SnapShot_Description' -value $snapshotDesc
+
+           $Results | Add-Member -Type NoteProperty -Name 'VMPath' -value $vm.ExtensionData.config.files.VMpathname
+           $Results | Add-Member -Type NoteProperty -Name 'VMDK' -value $VMDK
+           $props += $Results
+     #endregion
+
+
+#Write-Output $obj | select-object -Property 'VMName', 'IP Address', 'Domain Name', 'Real-OS', 'vCPU', 'RAM(GB)', 'Total-HDD(GB)' ,'HDDs(GB)', 'Datastore', 'Partition/Size', 'Hardware Version', 'PowerState', 'Setting-OS', 'EsxiHost', 'vCenter Server', 'Folder', 'MacAddress', 'VMX', 'VMDK', 'VMTools Status', 'VMTools Version', 'VMTools Version Status', 'VMTools Running Status', 'SnapShots', 'DataCenter', 'vNic', 'PortGroup', 'RDMs' # 'Folder', 'Department', 'Environment' 'Environment'  
+
+# Get End Time
+$endVMCheck = (Get-Date)
+$elapsedTime = $EndVMCheck-$StartVMCheck
+$elapsedTimeOut =[Math]::Round(($elapsedTime.TotalMinutes),2)
+
+Write-Host "Elapsed Time :> $elapsedTimeOut Minutes <#> To check VM :> $VM "
+
+   }  
+ Write-Output $props 
+
+  # $SCRIPT_PARENT = Split-Path -Parent $MyInvocation.MyCommand.Definition 
+  # $Date = Get-Date -Format "dd-MM-yyyy"
+  # $outputfile = ($SCRIPT_PARENT + "\VM_Inventory_Report_$($date).csv")
+  # "C:\Users\adm.amolp\Google Drive\_Script\VM_Inventory\_NewVM-Inventory_WIP_18Apr16\vcreport.csv"
+  # $props | Export-Csv -path $outputfile -NoTypeInformation -Append
+ 
+} #Function End
+#endregion
+
+Function Get-vClusterInfo{
+$report = @()
+ 
+Write-host "Report Generation is in Progress..."
+ 
+foreach ($cluster in Get-Cluster   ){
+ 
+  $row = '' | select ClusterName,OverallStatus,HostsCount,HAEnabled,HAFailoverLevel,DRSEnabled,DRSAutomationLevel,CpuCapacityMHz , CpuUsedMHz, MemCapacityGB,MemUsedGB ,StorageCapacityGB,StorageUsedGB,VCName
+$cluster_view = Get-View ($cluster)
+$resourceSummary=$cluster_view.GetResourceUsage()
+$row.ClusterName =$cluster_view.Name
+$row.OverallStatus =($cluster.ExtensionData.OverallStatus) -replace "green" ,"Green"
+$row.HostsCount =$cluster_view.Host.Count
+$row.HAEnabled =$cluster.HAEnabled
+$row.HAFailoverLevel =$cluster.HAFailoverLevel
+$row.DRSEnabled =$cluster.DrsEnabled
+$row.DRSAutomationLevel =$cluster.DrsAutomationLevel
+$row.CpuCapacityMHz =$resourceSummary.CpuCapacityMHz
+$row.CpuUsedMHz =$resourceSummary.CpuUsedMHz
+$row.MemCapacityGB =[math]::Round($resourceSummary.MemCapacityMB/1024,2)
+$row.MemUsedGB =[math]::Round($resourceSummary.MemUsedMB/1024,2)
+$row.StorageCapacityGB =[math]::Round($resourceSummary.StorageCapacityMB/1024,2)
+$row.StorageUsedGB =[math]::Round($resourceSummary.StorageUsedMB/1024,2)
+$row.VCName =($cluster.ExtensionData.Client.ServiceUrl.Split('/')[2]).split('.')[0].toupper() 
+ 
+$report += $row
+}
+$report 
+}  
+
+Function Get-VMHostInfo {
+$props = @()
+
+$VMhosts = Get-VMHost #| select * #-First 1
+
+ $i = 0
+ $E = 0
+ $count = $VMhosts.Count
+ $E = $count
+ 
+Write-Host "...Counting Total VMHosts. - $count" 
+ 
+#region 	Foreach VMhost check loop	 <12/22/2016>
+foreach  ($vmHost in $vmHosts){
+    $i++
+Write-Progress  -activity  "Checking for Host: ($i of $E) >> $vmHost" -perc  (($i / $E)*100)
+    
+    If($vmHost.State -eq "Connected"){
+
+    # VM count on the respective Host
+        $vmcounts =  Get-VMHost $vmHost.Name | get-vm  | select Name
+        $vmcount = $vmcounts.Count
+        #----------------------------- 
+		
+		If($vmHost.ParentID -match 'Cluster*'){
+        $HostType = $vmHost.Parent.Name
+         }
+
+        else { $HostType = "Standalone Host" }
+
+        $HostService = Get-VMHostService $vmHost.Name
+        # NTP Information Check
+        $NTPServer = Get-VMHostNtpServer $vmHost.Name
+        #-----------------------------
+        # NTP Service Check
+        $NTPService = ($HostService | Where-Object {$_.Key -eq 'ntpd'}) 
+        If ($NTPService.Running -eq $true) {
+        $NTP = "NTP-Running"
+        }
+        else {$NTP = "NTP-Not-Running"}
+        #-----------------------------
+		# SSH Service Check
+        $SSHService = ($HostService | Where-Object {$_.Key -eq 'TSM-SSH'}) 
+        If ($SSHService.Running -eq $true) {
+        $SSH = "SSH-Running"
+        }
+        else {$SSH = "SSH-Not-Running"}
+        #----------------------------- 
+
+        $vCenterServer =  ($vmHost.ExtensionData.Client.ServiceUrl.Split('/')[2]).split('.')[0].toupper()
+
+        $hostIP = Get-VMHostNetwork -VMHost $vmHost.Name | Select  -ExpandProperty VirtualNic
+        $MgmNet= ($hostIP | Where {$_.PortGroupName -eq "Management Network" })
+        $HIP = $MgmNet.IP 
+        $HMask = $MgmNet.SubnetMask
+        $HMaC = $MgmNet.Mac
+        $NICName = ($hostIP).Name -join "`n"
+        $NICIPs = ($hostIP).IP -join "`n"
+        $NICMask = ($hostIP).SubnetMask -join "`n"
+        $NICMaCs = ($hostIP).Mac -join "`n"
+        $VMotionEnabled = ($hostIP).VMotionEnabled -join "`n"
+        $PortGroupName = ($hostIP).PortGroupName -join "`n"
+
+        #----------------------------- 
+      $statcpu = Get-Stat -Entity ($vmHost.Name)-start (get-date).AddDays(-7) -Finish (Get-Date)-MaxSamples 10000 -stat cpu.usage.average
+      $statmemconsumed = Get-Stat -Entity ($vmHost)-start (get-date).AddDays(-7) -Finish (Get-Date)-MaxSamples 10000 -stat mem.consumed.average
+      $statmemusage = Get-Stat -Entity ($vmHost)-start (get-date).AddDays(-7) -Finish (Get-Date)-MaxSamples 10000 -stat mem.usage.average
+      $statmemallocated = Get-VMhost $vmHost.name | Select @{N="allocated";E={$_ | Get-VM | %{$_.MemoryGB} | Measure-Object -Sum | Select -ExpandProperty Sum}}
+      $statmeminstalled = Get-VMHost $vmHost.name | select MemoryTotalGB
+      $statmeminstalled = $statmeminstalled.MemoryTotalGB
+
+      $cpu = $statcpu | Measure-Object -Property value -Average -Maximum -Minimum
+      $memconsumed = $statmemconsumed | Measure-Object -Property value -Average
+      $memusage = $statmemusage | Measure-Object -Property value -Average
+
+      $CPUMax = "{0:N0}" -f ($cpu.Maximum)
+      $CPUAvg = "{0:N0}" -f ($cpu.Average)
+      $CPUMin = "{0:N0}" -f ($cpu.Minimum)
+      $allocated = "{0:N0}" -f ($statmemallocated.allocated)
+      $consumed = "{0:N0}" -f ($memconsumed.Average/1024/1024)
+      $usage = "{0:P0}" -f ($memusage.Average/100)
+      $installed = "{0:N0}" -f ($statmeminstalled)
+
+      $CPUMax = $CPUMax.ToString() + " %"
+      $CPUAvg = $CPUAvg.ToString() + " %"
+      $CPUMin = $CPUMin.ToString() + " %"
+      $MemoryInstalled = $installed.ToString() + " GB"
+      $MemoryAllocated = $allocated.ToString() + " GB"
+      $MemoryConsumed = $consumed.ToString() + " GB"
+      $MemoryUsage = $usage.ToString()
+		#----------------------------- 
+		
+		$Results = New-Object Object
+        $Results | Add-Member -Type NoteProperty -Name 'VCName' -Value $vCenterServer 
+		$Results | Add-Member -Type NoteProperty -Name 'HostName' -Value $vmHost.name 
+		$Results | Add-Member -Type NoteProperty -Name 'HostIP' -Value $HIP
+        $Results | Add-Member -Type NoteProperty -Name 'HostMask' -Value $HMask
+        $Results | Add-Member -Type NoteProperty -Name 'HostMac' -Value $HMaC 
+		$Results | Add-Member -Type NoteProperty -Name 'State' -Value $vmHost.State
+        $Results | Add-Member -Type NoteProperty -Name 'ConnectionState' -Value $vmHost.State  
+		$Results | Add-Member -Type NoteProperty -Name 'Manufacturer' -Value $vmHost.Manufacturer
+        $Results | Add-Member -Type NoteProperty -Name 'Model' -Value $vmHost.Model 
+		$Results | Add-Member -Type NoteProperty -Name 'Version' -Value $vmHost.Version 
+		$Results | Add-Member -Type NoteProperty -Name 'Build' -Value $vmHost.Build 
+		$Results | Add-Member -Type NoteProperty -Name 'NumCpu' -Value $vmHost.NumCpu
+        $Results | Add-Member -Type NoteProperty -Name 'MemoryTotalGB' -Value $vmHost.MemoryTotalGB 
+		$Results | Add-Member -Type NoteProperty -Name 'ClusterType' -Value $HostType 
+		$Results | Add-Member -Type NoteProperty -Name 'NTPServer' -Value (($NTPServer) -join "`n") 
+		$Results | Add-Member -Type NoteProperty -Name 'NTP' -Value $NTP 
+		$Results | Add-Member -Type NoteProperty -Name 'SSH' -Value $SSH 
+		$Results | Add-Member -Type NoteProperty -Name 'TotalVMs' -Value $vmcount 
+		$Results | Add-Member -Type NoteProperty -Name 'CPUMax' -Value $CPUMax 
+		$Results | Add-Member -Type NoteProperty -Name 'CPUAvg' -Value $CPUAvg 
+		$Results | Add-Member -Type NoteProperty -Name 'CPUMin' -Value $CPUMin 
+		$Results | Add-Member -Type NoteProperty -Name 'MemoryInstalled' -Value $MemoryInstalled 
+		$Results | Add-Member -Type NoteProperty -Name 'MemoryAllocated' -Value $MemoryAllocated 
+		$Results | Add-Member -Type NoteProperty -Name 'MemoryConsumed' -Value $MemoryConsumed 
+		$Results | Add-Member -Type NoteProperty -Name 'MemoryUsage' -Value $MemoryUsage 
+        $Results | Add-Member -Type NoteProperty -Name 'vmkNICs' -Value $NICName
+        $Results | Add-Member -Type NoteProperty -Name 'vmkNICIPs' -Value $NICIPs
+        $Results | Add-Member -Type NoteProperty -Name 'vmkNICMasks' -Value $NICMask
+        $Results | Add-Member -Type NoteProperty -Name 'vmkNICMacs' -Value $NICMaCs
+        $Results | Add-Member -Type NoteProperty -Name 'vmkNIC_vMotion' -Value $VMotionEnabled
+        $Results | Add-Member -Type NoteProperty -Name 'PortGroupName' -Value $PortGroupName
+		$props += $Results
+    }
+
+Else {
+
+		$Results = New-Object Object
+        $Results | Add-Member -Type NoteProperty -Name 'VCName' -Value $vCenterServer  
+		$Results | Add-Member -Type NoteProperty -Name 'HostName' -Value $vmHost.name 
+		$Results | Add-Member -Type NoteProperty -Name 'HostIP' -Value $HIP
+        $Results | Add-Member -Type NoteProperty -Name 'HostMask' -Value $HMask
+        $Results | Add-Member -Type NoteProperty -Name 'HostMac' -Value $HMaC 
+		$Results | Add-Member -Type NoteProperty -Name 'State' -Value $vmHost.State
+        $Results | Add-Member -Type NoteProperty -Name 'ConnectionState' -Value $vmHost.State  
+		$Results | Add-Member -Type NoteProperty -Name 'Manufacturer' -Value $vmHost.Manufacturer
+        $Results | Add-Member -Type NoteProperty -Name 'Model' -Value $vmHost.Model 
+		$Results | Add-Member -Type NoteProperty -Name 'Version' -Value $vmHost.Version 
+		$Results | Add-Member -Type NoteProperty -Name 'Build' -Value $vmHost.Build 
+		$Results | Add-Member -Type NoteProperty -Name 'NumCpu' -Value $vmHost.NumCpu
+        $Results | Add-Member -Type NoteProperty -Name 'MemoryTotalGB' -Value $vmHost.MemoryTotalGB 
+		$Results | Add-Member -Type NoteProperty -Name 'ClusterType' -Value $HostType 
+		$Results | Add-Member -Type NoteProperty -Name 'NTPServer' -Value "" 
+		$Results | Add-Member -Type NoteProperty -Name 'NTP' -Value "" 
+		$Results | Add-Member -Type NoteProperty -Name 'SSH' -Value "" 
+		$Results | Add-Member -Type NoteProperty -Name 'TotalVMs' -Value "" 
+		$Results | Add-Member -Type NoteProperty -Name 'CPUMax' -Value "" 
+		$Results | Add-Member -Type NoteProperty -Name 'CPUAvg' -Value "" 
+		$Results | Add-Member -Type NoteProperty -Name 'CPUMin' -Value ""
+		$Results | Add-Member -Type NoteProperty -Name 'MemoryInstalled' -Value ""
+		$Results | Add-Member -Type NoteProperty -Name 'MemoryAllocated' -Value ""
+		$Results | Add-Member -Type NoteProperty -Name 'MemoryConsumed' -Value ""
+		$Results | Add-Member -Type NoteProperty -Name 'MemoryUsage' -Value ""
+        $Results | Add-Member -Type NoteProperty -Name 'vmkNICs' -Value ""
+        $Results | Add-Member -Type NoteProperty -Name 'vmkNICIPs' -Value ""
+        $Results | Add-Member -Type NoteProperty -Name 'vmkNICMasks' -Value ""
+        $Results | Add-Member -Type NoteProperty -Name 'vmkNICMacs' -Value ""
+        $Results | Add-Member -Type NoteProperty -Name 'vmkNIC_vMotion' -Value ""
+        $Results | Add-Member -Type NoteProperty -Name 'PortGroupName' -Value ""
+		$props += $Results
+
+}
+
+
+}
+$props
+}
+
+
+
+ #-------- Loop clearing
+ $SumProps = @()
+ $ClusterInfoOut = @()
+ #$props = @()
+
+ $VMHostInfoOut =@()
+ $VMout = @()
+ #--------
+
+
+ Foreach($VC in $VCs){
+
+If(Test-Connection $VC -Quiet -Count 1  ){
+
+#$U = "uab1019"
+#$P = "P"
+
+Do-WriteHost "Connecting to VC >> $VC"
+#$VC_Connect = Connect-VIServer $VC -User $U -Password $P -WarningAction 0
+#$VC_Connect = Connect-VIServer $VC -User $U -Password $P -WarningAction 0
+$VC_Connect = Connect-VIServer $VC  -WarningAction 0  # $U -Password $P -WarningAction 0
+}
+
+Else {
+    Do-WriteHost ">>> VC is not available " -Color Red -Level Error
+
+}
+
+If($VC_Connect.IsConnected){
+$SCRIPT_PARENT = Split-Path -Parent $MyInvocation.MyCommand.Definition 
+
+Do-WriteHost "[VC]..Connected to VC >> $VC" -Color Green
+
+Do-WriteHost "[Start] DataStore report"
+$DataStoresOut = Get-@VMDataStores
+$outputfile = ($SCRIPT_PARENT + "\VC_DataStores_Report(Complete)_$($date).csv")
+$DataStoresOut | Export-Csv -path $outputfile -NoTypeInformation -Append
+Do-WriteHost "[End] DataStore report"
+
+
+Do-WriteHost "[Start] Cluster Information report"
+$ClusterInfoOut += Get-vClusterInfo
+ #| Export-Csv -path $outputfile -NoTypeInformation -Append
+Do-WriteHost "[End] Cluster Information report"
+
+
+Do-WriteHost "[Start] Summary Count"
+#$vHosts += (get-view –viewtype HostSystem).count
+           $Results1 = New-Object Object
+           $Results1 | Add-Member -Type NoteProperty -Name 'VCName' -Value $VC_Connect.Name.split('.')[0].toupper()
+           $Results1 | Add-Member -Type NoteProperty -Name 'Hosts' -Value $(get-view –viewtype HostSystem).count
+           $Results1 | Add-Member -Type NoteProperty -Name 'VirtualMachine' -Value $(Get-View -ViewType VirtualMachine -Property Name, Config.Template | Where-Object {$_.Config.Template -ne "True"}).count
+           $Results1 | Add-Member -Type NoteProperty -Name 'VM Templates' -Value $(Get-View -ViewType VirtualMachine -Property Name, Config.Template | Where-Object {$_.Config.Template -eq "True"}).count
+           $Results1 | Add-Member -Type NoteProperty -Name 'Clusters' -Value $(Get-Cluster).count
+           $Results1 | Add-Member -Type NoteProperty -Name 'Datacenter' -Value $(get-view –viewtype Datacenter).count
+           $Results1 | Add-Member -Type NoteProperty -Name 'Datastore' -Value $(get-view –viewtype Datastore).count
+           $Results1 | Add-Member -Type NoteProperty -Name 'ComputeResource  ' -Value $(get-view –viewtype ComputeResource).count
+           $Results1 | Add-Member -Type NoteProperty -Name 'DistributedVirtualSwitch' -Value $(get-view –viewtype DistributedVirtualSwitch).count
+           $Results1 | Add-Member -Type NoteProperty -Name 'Folder' -Value $(get-view –viewtype Folder).count
+           $Results1 | Add-Member -Type NoteProperty -Name 'Network' -Value $(get-view –viewtype Network ).count
+           $Results1 | Add-Member -Type NoteProperty -Name 'ResourcePool' -Value $(get-view –viewtype ResourcePool).count
+           $SumProps += $Results1
+Do-WriteHost "[End] Summary Count"
+
+Do-WriteHost "[Start] VM Inventory report"
+$VMout1 = Get-VMinventory
+$VMoutputfile = ($SCRIPT_PARENT + "\VM_Inventory_Report(Complete)_$($date).csv")
+$VMout += $VMout1
+$VMout | Export-Csv -path $VMoutputfile -NoTypeInformation -Append
+Do-WriteHost "[End] VM Inventory report"
+  
+   #$DataStoresOut 
+
+Do-WriteHost "[Start] VMHost report"
+$VMHostInfoOut1 = Get-VMHostInfo
+$date = $(Get-Date -Format "yyyy-MM-dd-HHmm")
+$Hostoutputfile = ($SCRIPT_PARENT + "\VMHostInfo_$($date).csv")
+$VMHostInfoOut += $VMHostInfoOut1
+$VMHostInfoOut  | Export-Csv -Path $Hostoutputfile -NoTypeInformation -Append
+Do-WriteHost "[End] VMHostInfoOut report"
+
+
+
+
+Do-WriteHost "[VC]..Disconnecting VC >> $VC" -Color Yellow
+Disconnect-VIServer $VC -Confirm:$False
+}
+
+} # Foreach VC loop end
+
+
+
+#region Data Collection
+
+
+
+#endregion
+
+Do-WriteHost "Totatl hosts are $($VHostCount)" -Color Yellow
+
+
+
+
+#region DataStores HTML Dashboard
+
+$importData = Import-Csv $outputfile
+$outputfileHTML = "$SCRIPT_PARENT\VM_Inventory_$($Date).html"
+
+
+$allData = $importData 
+
+ #region Datastores Count
+$DSCount = $importData | select vcname | Group-Object vcname | select @{
+    Label = "Name"
+    Expression = { if ($_.Name) { $_.Name } else { "[No Value]" } }
+  },@{N=“Total Count“;E={$_.count}} | sort 'Total Count' -Descending
+
+#endregion
+
+#region Shared/Local Datastores Count
+$ToalDS =@()
+$TotalSharedDS =@()
+$TotalLocalDS =@()
+$VCnames = ($importData | select vcname -Unique ).vcname
+for ($i = 0; $i -lt $VCnames.Count; $i++) {
+$ToalDS += ($importData | Where-Object {(($_.vcname -eq $VCnames[$i]) -and ($_.DataStoreName -like "*"))}).count
+$TotalSharedDS += ($importData | Where-Object {(($_.vcname -eq $VCnames[$i]) -and ($_.'Shared Storage' -like "True"))}).count
+$TotalLocalDS += ($importData | Where-Object {(($_.vcname -eq $VCnames[$i]) -and ($_.'Shared Storage' -like "False"))}).count
+}
+
+ #region Cluster Datastores Count
+$ClusterNameCount = $importData | select ClusterName | Group-Object ClusterName | select @{
+    Label = "Name"
+    Expression = { if ($_.Name) { $_.Name } else { "[No Value]" } }
+  },@{N=“Total Count“;E={$_.count}} | sort 'Total Count' -Descending
+
+#endregion
+
+
+ #region Overprovisioned Datastores
+$OverProvisioned = $importData | Where-Object {$_.OverProvisioned -eq 'True'} 
+
+#endregion
+
+ #region Lowspace Datastores
+$LowSpaceDS = $importData | Where-Object {(($_.FreeSpacePer -le 15) -and ($_.FreeSpacePer -notlike 100))} 
+#endregion
+
+
+ #region Local/Storage Datastores Count
+$SharedStorageCount = $importData | select 'Shared Storage' | Group-Object 'Shared Storage' | select @{
+    Label = "Name"
+    Expression = { if ($_.Name -eq $true) { "Shared" } elseif ($_.Name -eq $False) { "Local" } else { "[No Value]" } }
+  },@{N=“Total Count“;E={$_.count}} | sort 'Total Count' -Descending
+
+#endregion
+
+ #region Datastores Usage
+$StorageUsed = $importData | select 'Shared Storage' | Group-Object 'Shared Storage' | select @{
+    Label = "Name"
+    Expression = { if ($_.Name -eq $true) { "Shared" } elseif ($_.Name -eq $False) { "Local" } else { "[No Value]" } }
+  },@{N=“Total Count“;E={$_.count}} | sort 'Total Count' -Descending
+
+#endregion
+
+#region Overprovissioned Datastores Count
+$ToalDS =@()
+$TotalOverprovissonDS =@()
+$VCnames = ($importData | select vcname -Unique ).vcname
+for ($i = 0; $i -lt $VCnames.Count; $i++) {
+$ToalDS += ($importData | Where-Object {(($_.vcname -eq $VCnames[$i]) -and ($_.DataStoreName -like "*"))}).count
+$TotalOverprovissonDS += ($importData | Where-Object {(($_.vcname -eq $VCnames[$i]) -and ($_.OverProvisioned -like "True"))}).count
+}
+ 
+#endregion
+
+
+
+#endregion
+
+#region VM Inventory HTML Dashboard
+$importDataVM = Import-Csv $VMoutputfile
+# $outputfileHTML = "$SCRIPT_PARENT\VM_Inventory_$($Date).html"
+
+$importDataVMHost = Import-Csv $Hostoutputfile
+
+$VMTotalCount = ($importDataVM | Where-Object {$_.VMName -like "*"}).count
+$VMPowerStateON = ($importDataVM | Where-Object {$_.powerstate -eq "PoweredON"}).count
+$VMPowerStateOFF = ($importDataVM | Where-Object {$_.powerstate -eq "PoweredOFF"}).count 
+
+
+# VM PowerState Count for each VC.
+$VMPowerONCount =@()
+$VMPowerOFFCount =@()
+$VCnames = ($importDataVM | select vcname -Unique ).vcname
+for ($i = 0; $i -lt $VCnames.Count; $i++) {
+$VMPowerONCount += ($importDataVM | Where-Object {(($_.vcname -eq $VCnames[$i]) -and ($_.powerstate -eq "PoweredON"))}).count
+$VMPowerOFFCount += ($importDataVM | Where-Object {(($_.vcname -eq $VCnames[$i]) -and ($_.powerstate -eq "PoweredOFF"))}).count
+}
+
+
+
+
+$VMOS = $importDataVM | Where-Object {$_.powerstate -eq "PoweredON"} | Group-Object VM_OS  | select @{
+    Label = "Name"
+    Expression = { if ($_.Name) { $_.Name } else { "[No Type]" } }
+  },@{N=“Total Count“;E={$_.count}} | sort 'Total Count' -Descending
+
+$snapshotTable = $importDataVM | Where-Object {$_.SnapShot_Count -ne "0"} | select  SnapShot_Name,VMName,SnapShot_Created,SnapShot_Description,SnapShot_Count,VCName
+
+
+# VM Snapshot Count for each VC.
+$VMSnapshotCount =@()
+$VCnames = ($snapshotTable | select vcname -Unique ).vcname
+for ($i = 0; $i -lt $VCnames.Count; $i++) {
+$VMSnapshotCount += ($snapshotTable | Where-Object {(($_.vcname -eq $VCnames[$i]) -and ($_.VMName -like "*"))}).count #($snapshotTable | Where-Object {(($_.vcname -eq $VCnames[$i]) -and ($_.SnapShot_Count -ne 0))}).count
+}
+
+#endregion
+
+
+#region Dashboard Code
+Dashboard -Name 'VM Inventory v0.1 @mol' -FilePath $outputfileHTML {
+
+#Dashboard -Name 'VM Inventory v0.1 @mol' -FilePath $outputfileHTML -Show {
+
+#TabOptions -SlimTabs  -SelectorColor Allports -Transition -LinearGradient -SelectorColorTarget DodgerBlue
+    
+    Tab -Name 'Dashboard' -IconRegular dot-circle   {
+
+        Section -Name 'VMware Summary' -Collapsable -HeaderBackGroundColor Astral{
+            Table -DataTable $SumProps -Simplify  -HideFooter -DisableSearch {
+        #Table -DataTable $SumProps -Buttons excelHtml5,csvHtml5,copyHtml5 -PagingStyle simple -HideFooter -DisablePaging  {
+        #TableConditionalFormatting -Name 'FreeSpacePer' -ComparisonType number -Operator le -Value 15 -Color black -BackgroundColor amber 
+        #TableConditionalFormatting -Name 'FreeSpacePer' -ComparisonType number -Operator le -Value 10 -Color black -BackgroundColor Crimson 
+        }
+
+        }
+
+
+        Section -Name 'VM Summary' -Collapsable -HeaderBackGroundColor Astral { 
+            Panel {
+               $D1 =@($VMPowerONCount)
+               $D2 =@($VMPowerOFFCount)
+               $DN1 =@($VCnames)
+
+
+            Chart -Title 'VM Power state per VC' -TitleAlignment center {
+            ChartLegend -Name 'Powered ON','Powered OFF' -Color SeaGreen,IndianRed #CoralRed
+            ChartBarOptions -Type bar -DataLabelsOffsetX 15 
+                for ($i = 0; $i -lt $D1.Count; $i++) {
+                        ChartBar -Name $DN1[$i]  -Value $D1[$i],$D2[$i] 
+                        #ChartBar -Name $DN1[$i]  -Value $D2[$i] 
+                    }
+            }
+        }
+            Panel {
+                $Data1 = @($VMOS.'Total Count') #400, 430, 448, 470, 540, 580, 690, 1100, 1200, 1380
+                $DataNames1 = @($VMOS.Name) #'South Korea', 'Canada', 'United Kingdom', 'Netherlands', 'Italy', 'France', 'Japan', 'United States', 'China', 'Germany'
+                Chart -Title 'VM count per OS type' -TitleAlignment center {
+                ChartBarOptions -Type bar -DataLabelsOffsetX 15 
+                    ChartLegend -Name 'Total' 
+                    for ($i = 0; $i -lt $Data1.Count; $i++) {
+                        ChartBar -Name $DataNames1[$i] -Value $Data1[$i] 
+                    }
+                }
+            }
+
+            Panel {
+               $D1 =@($VMSnapshotCount)
+               $DN1 =@($VCnames)
+
+
+            Chart -Title 'VM Snapshots per VC' -TitleAlignment center {
+            ChartLegend -Name 'Snapshots' -Color IndianRed #CoralRed
+            ChartBarOptions -Type bar -DataLabelsOffsetX 15 
+                for ($i = 0; $i -lt $D1.Count; $i++) {
+                        ChartBar -Name $DN1[$i]  -Value $D1[$i]
+                        #ChartBar -Name $DN1[$i]  -Value $D2[$i] 
+                    }
+            }
+        }
+          <#  Panel  {
+               $Data1 = @($VMOS.'Total Count')
+                $DataNames1 = @($VMOS.Name) 
+                Chart -Title 'DataStores Type' -TitleAlignment center -Width 600   { 
+                ChartBarOptions -Type bar -DataLabelsOffsetX 10 
+                    ChartLegend -Name 'Total' 
+                    for ($i = 0; $i -lt $Data1.Count; $i++) {
+                        ChartDonut -Name $DataNames1[$i] -Value $Data1[$i] 
+                    }
+                }
+                    
+           }
+        #>
+
+           }
+
+        Section -Name 'Datastores Summary' -Collapsable -HeaderBackGroundColor Astral {
+            
+            Panel {
+               $D1 =@($ToalDS)
+               $D2 =@($TotalOverprovissonDS)
+               $DN1 =@($VCnames)
+
+
+            Chart -Title 'Overprovissioned Datastores per VC' -TitleAlignment center {
+            ChartBarOptions -Type bar -DataLabelsOffsetX 15 
+            ChartLegend -Name 'Total Datastores','Overprovissioned Datastores' -Color SeaGreen,IndianRed #CoralRed
+                for ($i = 0; $i -lt $D1.Count; $i++) {
+                        ChartBar -Name $DN1[$i]  -Value $D1[$i],$D2[$i] 
+                        #ChartBar -Name $DN1[$i]  -Value $D2[$i] 
+                    }
+            }
+        }
+            
+            Panel {
+               $D1 =@($ToalDS)
+               $D2 =@($TotalSharedDS)
+               $D3 =@($TotalLocalDS)
+               $DN1 =@($VCnames)
+
+
+            Chart -Title 'Shared & Local Datastores per VC' -TitleAlignment center {
+            ChartBarOptions -Type barStacked100Percent    #-DataLabelsOffsetX 15 
+            ChartLegend -Name 'Shared Datastores','Local Datastores'   #-Color CornflowerBlue,SeaGreen,IndianRed #CoralRed
+                for ($i = 0; $i -lt $D1.Count; $i++) {
+                        ChartBar -Name $DN1[$i]  -Value $D2[$i],$D3[$i]  #$D1[$i],$D2[$i],$D3[$i]  
+                        #ChartBar -Name $DN1[$i]  -Value $D2[$i] 
+                    }
+            }
+        }
+
+            Panel  {
+                $Data1 = @($DSCount.'Total Count') #400, 430, 448, 470, 540, 580, 690, 1100, 1200, 1380
+                $DataNames1 = @($DSCount.Name) #'South Korea', 'Canada', 'United Kingdom', 'Netherlands', 'Italy', 'France', 'Japan', 'United States', 'China', 'Germany'
+                Chart -Title 'DataStores per Virtual Centers' -TitleAlignment center {
+                
+                ChartBarOptions -Type bar  -Distributed 
+                    ChartLegend -Name 'Total'
+                    for ($i = 0; $i -lt $Data1.Count; $i++) {
+                        ChartBar -Name $DataNames1[$i]  -Value $Data1[$i] 
+                    }
+                }
+                    
+           }
+
+            Panel  {
+              $Data1 = @($ClusterNameCount.'Total Count') #400, 430, 448, 470, 540, 580, 690, 1100, 1200, 1380
+                $DataNames1 = @($ClusterNameCount.Name) #'South Korea', 'Canada', 'United Kingdom', 'Netherlands', 'Italy', 'France', 'Japan', 'United States', 'China', 'Germany'
+                Chart -Title 'DataStores per vClusters' -TitleAlignment center  {
+                ChartBarOptions -Type bar -DataLabelsOffsetX 10 
+                    ChartLegend -Name 'Total' 
+                    for ($i = 0; $i -lt $Data1.Count; $i++) {
+                        ChartBar -Name $DataNames1[$i] -Value $Data1[$i] 
+                    }
+                }
+                    
+           }
+        
+         }
+
+        Section -Name 'VMWare Cluster Summary' -Collapsable -HeaderBackGroundColor Astral{
+            Table -DataTable $ClusterInfoOut -PagingOptions 5,15,25 -DefaultSortColumn 'HAEnabled', 'DRSEnabled'  {
+        #Table -DataTable $SumProps -Buttons excelHtml5,csvHtml5,copyHtml5 -PagingStyle simple -HideFooter -DisablePaging  {
+        #TableConditionalFormatting -Name 'FreeSpacePer' -ComparisonType number -Operator le -Value 15 -Color black -BackgroundColor amber 
+        #TableConditionalFormatting -Name 'FreeSpacePer' -ComparisonType number -Operator le -Value 10 -Color black -BackgroundColor Crimson 
+        TableConditionalFormatting -Name 'HAEnabled' -ComparisonType string -Operator contains -Value 'False' -BackgroundColor IndianRed
+        TableConditionalFormatting -Name 'DRSEnabled' -ComparisonType string -Operator contains -Value 'False' -BackgroundColor IndianRed
+                
+        }
+
+        }
+        
+
+
+    }
+
+    Tab -Name 'Notifications' -IconRegular dot-circle   {
+
+        Section -Name 'Low Space Datastores' -Collapsable -HeaderBackGroundColor Astral{
+        Table -DataTable $LowSpaceDS -PagingOptions 5,15,25 -TextWhenNoData 'No Data Available at this time' {
+        #TableConditionalFormatting -Name 'FreeSpacePer' -ComparisonType number -Operator le -Value 15 -Color black -BackgroundColor amber 
+        TableConditionalFormatting -Name 'FreeSpacePer' -ComparisonType number -Operator le -Value 10 -Color black -BackgroundColor Crimson 
+        }
+
+        }
+
+        Section -Name 'Over provisioned Datastores' -Collapsable -HeaderBackGroundColor Astral{
+        Table -DataTable $OverProvisioned -PagingOptions 5,15,25 -TextWhenNoData 'No Data Available at this time' {
+        TableConditionalFormatting -Name 'OverProvisioned' -ComparisonType string -Operator like -Value 'True' -Color black -BackgroundColor Crimson
+        }
+
+        }
+
+        Section -Name 'Current VM Snapshots' -Collapsable -HeaderBackGroundColor Astral{
+            Table -DataTable $snapshotTable -PagingOptions 5,15,25 -TextWhenNoData 'No Data Available at this time' {
+            #TableConditionalFormatting -Name 'OverProvisioned' -ComparisonType string -Operator like -Value 'True' -Color black -BackgroundColor Crimson
+            }
+        }
+        
+    }
+
+    Tab -Name 'Virtual Machine' -IconRegular dot-circle  {
+    Table -DataTable $importDataVM -PagingOptions 5,15,25  -Filtering    
+    }
+
+    Tab -Name 'Hosts ' -IconRegular dot-circle  {
+    Table -DataTable $importDataVMHost -PagingOptions 5,15,25  -Filtering    
+    }
+
+    Tab -Name 'Datastores' -IconRegular dot-circle  {
+    Table -DataTable $allData -DefaultSortColumn 'FreeSpacePer', 'OverProvisioned' -PagingOptions 5,15,25 {
+        #TableConditionalFormatting -Name 'FreeSpacePer' -ComparisonType number -Operator le -Value 15 -Color black -BackgroundColor amber 
+        TableConditionalFormatting -Name 'FreeSpacePer' -ComparisonType number -Operator le -Value 10 -Color black -BackgroundColor Crimson 
+        TableConditionalFormatting -Name 'OverProvisioned' -ComparisonType string -Operator like -Value 'True' -Color black -BackgroundColor Crimson 
+
+    }
+    }
+
+
+}
+
+
+#endregion
+
+#$MailTextT =  Get-Content $outputfileHTML
+
+Copy-Item $outputfileHTML "\\dc01dwsav003\d$\xampp\htdocs\VmInventory\Home.html" -Force -Verbose
+
+$Sig =  "<html><p class=MsoNormal><o:p>&nbsp;</o:p></p><B> Regards, <p> Amol Patil</B></p></html>"
+$Top = "<html> .</html>"
+$MailText= $Top + $Sig
+$smtpServer = "SMTP" # SMTP server
+$smtpFrom = "amol.patil@abc.com"
+$smtpTo = "amol.patil@abc.com"
+$messageSubject = "VMWare Inventory Report > $(Get-date -Format "dd-MM-yyyy") (Week - $(get-date -UFormat %V))"
+$messageBody = $MailText #+  $MailTextT 
+$Attachment = $outputfile, $outputfileHTML <# If any attachment then you can define the  $Attachment#>
+
+
+$mailMessageParameters = @{
+       From       = $smtpFrom
+       To         = $smtpTo
+       Subject    = $messageSubject
+       SmtpServer = $smtpServer
+       Body       = $messageBody
+      Attachment = $Attachment
+}
+
+Send-MailMessage @mailMessageParameters -BodyAsHtml 
+
+
+Write-Host "Email has been sent..... $(Get-date -format "dd-MMM-yyyy HH:mm:ss")" -ForegroundColor Green
+
+
+# Get End Time
+$EndMain = (Get-Date)
+$MainElapsedTime = $EndMain-$startMain
+$MainElapsedTimeOut =[Math]::Round(($MainElapsedTime.TotalMinutes),3)
+
+Write-Host "
+[Total Elapsed Time]" -ForegroundColor Yellow -NoNewline 
+Write-Host "  $MainElapsedTimeOut Min. for Objects [$($RUNParallel.Count)/$($ObjectCount)]"   
