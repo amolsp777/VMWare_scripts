@@ -2,6 +2,20 @@
 
 This script is to get the Cluster, Host and VMs information and VM counts on each cluster and ESXi Host.
 
+You will get
+
+Powered on VMs on each cluster.
+
+Powered on VMs on each Host.
+
+Powered on VMs count
+
+Host version and Build number details
+
+VM cluster
+
+Cluster name in each VC
+
 #### Code
 
 ```powershell
