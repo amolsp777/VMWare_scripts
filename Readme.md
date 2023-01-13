@@ -2,7 +2,7 @@
 
 # Table of references
 
-  * <small><a href='https://pandao.github.io/editor.md/en.html#Heading%201%20link%20%20%20Heading%20link'>Editor.md</a></small>
+  * <small><a href='https://github.com/amolsp777/VMWare_scripts/tree/master/Get%20Cluster%2C%20Host%20%26%20VM%20info%20and%20count'>Get Cluster, Host & VM info and count</a></small>
   * <small><a href='https://ecotrust-canada.github.io/markdown-toc/'>Generate TOC Table of Contents from GitHub Markdown or Wiki Online</a></small>
   * <small><a href='https://github.com/ekalinin/github-markdown-toc/blob/master/README.md'>gh-md-toc</a></small>
 
