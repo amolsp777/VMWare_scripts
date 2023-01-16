@@ -53,19 +53,20 @@ $datareport = Get-Cluster -PipelineVariable cluster | Get-VMHost |
 #### Output
 
 ``` powershell 
-VC Name Cluster       Host   Host Version Host Build VMs on Cluster VMs on Host PowerON VMs on Host PowerOFF VMs on Host Host CPUSocket
-------- -------       ----   ------------ ---------- -------------- ----------- ------------------- -------------------- --------------
-VC1     VC1_Cluster_1 Host1  7.0.3        20328353   338            56          56                  0                    2
-VC1     VC1_Cluster_1 Host2  7.0.3        20328353   338            64          64                  0                    2
-VC1     VC1_Cluster_2 Host3  7.0.3        20328353   12             1           1                   0                    2
-VC1     VC1_Cluster_2 Host4  7.0.3        20328353   12             2           1                   1                    2
-VC2     VC2_Cluster_1 Host5  7.0.3        20328353   338            57          57                  0                    2
-VC2     VC2_Cluster_1 Host6  7.0.3        20328353   338            64          64                  0                    2
-VC2     VC2_Cluster_2 Host7  7.0.3        20328353   12             9           8                   1                    2
-VC2     VC2_Cluster_2 Host8  7.0.3        20328353   12             1           1                   0                    2
-VC3     VC3_Cluster_1 Host9  7.0.3        20328353   12             2           1                   1                    2
-VC3     VC3_Cluster_1 Host10 7.0.3        20328353   16             11          11                  0                    2
-VC3     VC3_Cluster_2 Host11 7.0.3        20328353   16             4           4                   0                    2
-VC3     VC3_Cluster_2 Host12 7.0.3        20328353   16             1           1                   0                    2
+
+VC Name Cluster       Host   Host Version Host Build VMs on Cluster VMs on Host PowerON VMs on Host PowerOFF VMs on Host Host CPUSocket Host Corepersocket WindowsVM WinVMOS
+------- -------       ----   ------------ ---------- -------------- ----------- ------------------- -------------------- -------------- ------------------ --------- -------
+VC1     VC1_Cluster_1 Host1  7.0.3        20328353   338            56          56                  0                    2              22                 42
+VC1     VC1_Cluster_1 Host2  7.0.3        20328353   338            64          64                  0                    2              22                 58
+VC1     VC1_Cluster_2 Host3  7.0.3        20328353   12             1           1                   0                    2              8                  0
+VC1     VC1_Cluster_2 Host4  7.0.3        20328353   12             2           1                   1                    2              8                  0
+VC2     VC2_Cluster_1 Host5  7.0.3        20328353   338            57          57                  0                    2              22                 43
+VC2     VC2_Cluster_1 Host6  7.0.3        20328353   338            64          64                  0                    2              22                 58
+VC2     VC2_Cluster_2 Host7  7.0.3        20328353   12             9           8                   1                    2              8                  4
+VC2     VC2_Cluster_2 Host8  7.0.3        20328353   12             1           1                   0                    2              8                  0
+VC3     VC3_Cluster_1 Host9  7.0.3        20328353   12             2           1                   1                    2              8                  0
+VC3     VC3_Cluster_1 Host10 7.0.3        20328353   16             11          11                  0                    2              8                  0
+VC3     VC3_Cluster_2 Host11 7.0.3        20328353   16             4           4                   0                    2              8                  2
+VC3     VC3_Cluster_2 Host12 7.0.3        20328353   16             1           1                   0                    2              8                  0
 
 ```
