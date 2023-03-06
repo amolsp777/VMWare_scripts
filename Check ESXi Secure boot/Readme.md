@@ -12,3 +12,7 @@ foreach($esx in $esxs){
     
 ```    
 
+### Output
+
+![image](https://user-images.githubusercontent.com/24545237/223200865-3cc39a9b-c3b7-4535-86d1-d6e14ebff56c.png)
+
